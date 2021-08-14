@@ -1,86 +1,88 @@
-var express = require('express');
-var path = require('path');
-var favicon = require('serve-favicon');
-var logger = require('morgan');
-var cookieParser = require('cookie-parser');
-var bodyParser = require('body-parser');
-var session    = require('express-session');
+const createError = require("http-errors");
+const express = require("express");
+const path = require("path");
+const cookieParser = require("cookie-parser");
+const session = require("express-session");
+const history = require("connect-history-api-fallback");
+// const pino = require('pino-http');
+const RedisStore = require("connect-redis")(session);
 
-var MongoStore = require('connect-mongo')(session);
-var settings = require('./settings');
+const config = require("./config");
+// const logger = require('./utils/logger');
+// const mongodb = require('./utils/mongodb');
+const redis = require("./utils/redis");
 
+const user = require("./routes/user");
+const activity = require("./routes/activity");
 
-var routes = require('./routes/index');
-var manage = require('./routes/manage');
+const app = express();
+const server = require("http").Server(app);
+const io = require("socket.io")(server, {
+  cors: {
+    origin: "*",
+  },
+});
 
-var app = express();
+app.set("socketio", io);
 
 // view engine setup
-app.set('views', path.join(__dirname, 'views'));
-app.set('view engine', 'ejs');
-app.set('trust proxy', 'loopback, linklocal, uniquelocal');
+app.set("views", path.join(__dirname, "views"));
+app.set("view engine", "jade");
 
-// uncomment after placing your favicon in /public
-//app.use(favicon(__dirname + '/public/favicon.ico'));
-var env = process.env.NODE_ENV || 'development';
-if (env === 'development') {    
-  app.use(logger('dev'));
-}else{
-  app.use(logger('combined'))
-}
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: false }));
+// app.use(
+//   pino({
+//     logger: logger,
+//     serializers: { req: (req) => ({ method: req.method, url: req.url })}
+//   })
+// );
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 
-app.use(session({
-    secret: settings.cookieSecrect,
+app.use(
+  session({
+    secret: config.session.cookieSecrect,
     resave: false,
     saveUninitialized: false,
-	store: new MongoStore({
-		url: settings.dbAddr
-	})
-}));
+    store: new RedisStore({ client: redis }),
+  })
+);
 
-app.use('/', function(req, res, next){
-	next();
-});
+// app.use('/', function (req, res, next) {
+//   next();
+// });
 
-app.use(settings.rootPath, express.static(path.join(__dirname, 'public')));
-//app.use('/', routes);
-app.use(settings.rootPath + '/app', routes);
-app.use(settings.rootPath + '/manage', manage);
+// const index = require("./routes/index");
+// app.use("/", index);
 
-
-// catch 404 and forward to error handler
-app.use(function(req, res, next) {
-    var err = new Error('Not Found');
-    err.status = 404;
-    next(err);
-});
-
-// error handlers
-
-// development error handler
-// will print stacktrace
-if (env === 'development') {
-    app.use(function(err, req, res, next) {
-        res.status(err.status || 500);
-        res.render('error', {
-            message: err.message,
-            error: err
-        });
-    });
+app.use(config.rootPath + "/user", user);
+app.use(config.rootPath + "/activity", activity);
+// app.use(config.rootPath + '/socket', socket);
+for (const name of config.danmaku.senders) {
+  const sender = require("./routes/sender/" + name);
+  if (sender.router) app.use(config.rootPath + "/" + name, sender.router);
+  if (sender.socket) sender.socket(io, config.rootPath + "/" + name);
 }
 
-// production error handler
-// no stacktraces leaked to user
-app.use(function(err, req, res, next) {
-    res.status(err.status || 500);
-    res.render('error', {
-        message: err.message,
-        error: {}
-    });
+app.use(config.rootPath, express.static(path.join(__dirname, "dist")));
+app.use(history());
+app.use(config.rootPath, express.static(path.join(__dirname, "public")));
+
+// catch 404 and forward to error handler
+app.use(function (req, res, next) {
+  next(createError(404));
 });
 
+// error handler
+app.use(function (err, req, res) {
+  // set locals, only providing error in development
+  res.locals.message = err.message;
+  res.locals.error = req.app.get("env") === "development" ? err : {};
 
-module.exports = app;
+  // render the error page
+  res.status(err.status || 500);
+  res.render("error");
+});
+
+module.exports = { app, server };
